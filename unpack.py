@@ -1,11 +1,12 @@
-# 本模块的功能为解析asdu中的信息对象集合，信息对象集是本协议所要获取的主要信息(body information)
+# 本模块将二进制数据包解包为结构化数据
 # 参考协议：
 # 1. `IEC 60870-5-101` (传输规约基本远动任务配套标准)
 # 2. `GB/T 18657.4-2002` (应用信息元素的定义和编码)
+from math import log2
 from struct import unpack
 
 from data import *
-from iec_types import *
+from iec_types import APDU, ASDU
 
 
 ################################ 数值解析 ################################
@@ -813,12 +814,13 @@ def unpack_info_elems(type_id: int, data: bytes):
         # 7.3.6.7 目录
         return unpack_NOF(data[0]), unpack_LOF(data[1]), unpack_SOF(data[2]), unpack_CP56Time2a(data[3:10])
 
+
 ################################ 结构解析 ################################
 def unpack_info_obj_set(type_id: int, info_objs_total_number: int, data: bytes) -> list:
-    """解析信息对象集合
-    信息对象地址1 信息元素集1
-    ......
-    信息对象地址1 信息元素集n
+    """解析信息对象集合：
+        信息对象地址1 信息元素集1
+        ......
+        信息对象地址1 信息元素集n
     """
     info_objs = []
     info_obj_size = int(len(data) / info_objs_total_number)
@@ -833,11 +835,11 @@ def unpack_info_obj_set(type_id: int, info_objs_total_number: int, data: bytes) 
 
 
 def unpack_info_obj_sq(type_id: int, info_objs_total_number: int, data: bytes) -> list:
-    """解析信息对象序列
-    信息对象地址（基地址）
-    信息元素集1
-    ......
-    信息元素集n
+    """解析信息对象序列：
+        信息对象地址（基地址）
+        信息元素集1
+        ......
+        信息元素集n
     """
     info_objs, counter = [], 0
     info_obj_addr_base = unpack_info_obj_addr(data[:INFO_ADDR_SIZE])
@@ -875,7 +877,7 @@ def unpack_asdu(data: bytes):
     common_addr_bytes = data[2 + TRANS_CAUSE_SIZE:2 + TRANS_CAUSE_SIZE + COMMON_ADDR_SIZE]
     common_addr = unpack('<H', common_addr_bytes)[0]
 
-    # 信息对象
+    # 信息对象：分为集合和序列两种结构
     info_objs_bytes = data[2 + TRANS_CAUSE_SIZE + COMMON_ADDR_SIZE:]
     if vsq['is_sq'] == True:
         info_objs = unpack_info_obj_sq(type_id, vsq['info_objs_total_number'], info_objs_bytes)
@@ -883,3 +885,50 @@ def unpack_asdu(data: bytes):
         info_objs = unpack_info_obj_set(type_id, vsq['info_objs_total_number'], info_objs_bytes)
 
     return ASDU(type_id, vsq, trans_cause, common_addr, info_objs)
+
+
+def unpack_apci(data: bytes) -> tuple:
+    """解析apci数据
+    APCI为应用协议控制信息, 表征着报文的作用, 不承载传输数据
+    第一个字节为0x68, 为IEC104报文的起始标志位, 标志着报文的开始
+    第二个字节表示了IEC104报文的长度, 即从第三个字节到结束共有多少字节
+    """
+    pdu_send, pdu_recv = 0, 0
+    if data[2] & 0b1 == 0b0:
+        '''第三个字节的第一位为0则该报文为I格式
+        对于I格式的报文, 有APCI和ASDU两个部分, ASDU承载了待传输的数据'''
+        pdu_format = 'I'
+        pdu_action = 'TRANSMIT'
+        pdu_send = unpack('<H', data[2:4])[0]
+        pdu_recv = unpack('<H', data[4:6])[0]
+    elif data[2] & 0b11 == 0b01:
+        '''第三个字节的第一位和第二位为01则表示该报文为S格式
+        S格式的报文仅用于监视而不传输数据'''
+        pdu_format = 'S'
+        pdu_action = 'MONITOR'
+        pdu_recv = unpack('<H', data[4:6])[0]
+    else:
+        '''第三个字节的第一位和第二位为11则表示该报文为U格式
+        U格式报文可看成一句指令, 此处第三个字节的第一位和第二位必为11, 逻辑判断省略'''
+        pdu_format = 'U'
+        pdu_action = U_ACTIONS[int(log2((data[2]-0b11)>>2))]  # 解析指令详情
+
+    return pdu_format, pdu_action, pdu_send, pdu_recv
+
+
+def unpack_apdu(data: bytes) -> APDU:
+    pdu_format, pdu_action, pdu_send, pdu_recv = unpack_apci(data[:APCI_SIZE])
+    # 仅当apci格式为I格式时有asdu信息
+    if pdu_format == 'I':
+        return APDU(pdu_format, pdu_action, pdu_send, pdu_recv, unpack_asdu(data[APCI_SIZE:]))
+    else:
+        return APDU(pdu_format, pdu_action, pdu_send, pdu_recv,)
+
+
+def from_bytes_to_apdus(data: bytes) -> list:
+    if not data:
+        return []
+
+    if data[0] == 0x68:
+        pack_size = data[1] + 2
+        return [unpack_apdu(data[:pack_size]), ] + from_bytes_to_apdus(data[pack_size:])
