@@ -30,24 +30,24 @@ class BaseStation:
         # 更新站状态信息
         for apdu in apdus:
             assert isinstance(apdu, APDU)
-
             if apdu.format == 'I':
                 if apdu.recv != self.vs or apdu.send != self.vr:
-                    print('顺序错误')
+                    print('顺序错误！主动关闭')
                     self.tcp_sock.close() # 主动关闭
                 else:
-                    print('接收成功')
+                    print('接收成功！')
+                    print(apdu)
                     self.ack = apdu.recv
-                    self.recv += 1
+                    self.vr += 1
 
             elif apdu.format == 'S':
                 if apdu.recv != self.vs:
-                    print('顺序错误')
+                    print('顺序错误!')
                     self.tcp_sock.close() # 主动关闭
                 else:
                     print('接收成功')
                     self.ack = apdu.recv
-                    self.recv += 1
+                    self.vr += 1
 
         return apdus
 
@@ -58,16 +58,19 @@ class BaseStation:
         length = pack('B', len(asdu_bytes) + 4)
         if frame_format == 'I':
             control_bytes = pack('<H', self.vs << 1)  + pack('<H', self.vr << 1)
+            self.vs += 1
+
         elif frame_format == 'S':
             control_bytes = pack('<H', 1) + pack('<H', self.vr << 1)
+            self.vs += 1
+
         elif frame_format == 'U':
-            control_bytes = pack('<H', 2**U_ACTIONS.index(frame_action)+0b11) + b'\x00\x00'
-        data = b'h%s%s%s' % (length, control_bytes, asdu_bytes) 
+            control_bytes = pack('<H', ((2**U_ACTIONS.index(frame_action))<<2)+0b11) + b'\x00\x00'
+
+        data = b'h%s%s%s' % (length, control_bytes, asdu_bytes)
         # 发送数据
-        ret = self.tcp_sock.send(data)
-        print('已发送%s字节数据')
-        # 更新站状态信息
-        self.vs += 1
+        print('发送：', from_bytes_to_apdus(data)[0])
+        self.tcp_sock.send(data)
 
 
 class ControlStation(BaseStation):
@@ -97,12 +100,13 @@ class ControlStation(BaseStation):
 
     def total_call(self):
         """总召唤"""
+        print(f'self.vs  = {self.vs}, self.vr = {self.vr}')
         self.send('U', 'STARTDT ACTIVATE')
         time.sleep(1)
-        print(self.recv())
-        self.send('I', asdu_bytes=b'd\x01\x06\x00\x01\x00\x00\x00\x00\x14')
+        self.recv()
+        self.send('I', asdu_bytes=bytes.fromhex('64010600010000000014'))
         time.sleep(1)
-        print(self.recv())
+        self.recv()
         return
 
 

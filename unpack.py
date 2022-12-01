@@ -825,6 +825,9 @@ def unpack_info_obj_set(type_id: int, info_objs_total_number: int, data: bytes) 
     info_objs = []
     info_obj_size = int(len(data) / info_objs_total_number)
 
+    if info_obj_size == 0:
+        return info_objs
+
     for i in range(0, len(data), info_obj_size):
         info_objs.append({
             'addr': unpack_info_obj_addr(data[i:INFO_ADDR_SIZE]), 
@@ -899,14 +902,14 @@ def unpack_apci(data: bytes) -> tuple:
         对于I格式的报文, 有APCI和ASDU两个部分, ASDU承载了待传输的数据'''
         pdu_format = 'I'
         pdu_action = 'TRANSMIT'
-        pdu_send = unpack('<H', data[2:4])[0]
-        pdu_recv = unpack('<H', data[4:6])[0]
+        pdu_send = unpack('<H', data[2:4])[0] >> 1
+        pdu_recv = unpack('<H', data[4:6])[0] >> 1
     elif data[2] & 0b11 == 0b01:
         '''第三个字节的第一位和第二位为01则表示该报文为S格式
         S格式的报文仅用于监视而不传输数据'''
         pdu_format = 'S'
         pdu_action = 'MONITOR'
-        pdu_recv = unpack('<H', data[4:6])[0]
+        pdu_recv = unpack('<H', data[4:6])[0] >> 1
     else:
         '''第三个字节的第一位和第二位为11则表示该报文为U格式
         U格式报文可看成一句指令, 此处第三个字节的第一位和第二位必为11, 逻辑判断省略'''
